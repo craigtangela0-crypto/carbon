@@ -39,13 +39,14 @@ const getUserFriendlyErrorMessage = (error: unknown): string => {
 
   // 1. API Key / Permission Errors
   if (
+    message.includes('OPEN_API_KEY_NOT_SET') ||
     message.includes('401') ||
     message.includes('403') ||
     message.toLowerCase().includes('invalid_api_key') ||
     message.toLowerCase().includes('missing open_api_key') ||
     message.toLowerCase().includes('api key')
   ) {
-    return "서버 API 키 설정에 문제가 있습니다. 관리자에게 문의하세요.";
+    return "서버(OpenAI) API 키 설정에 문제가 있습니다. Cloud Run 환경변수 `OPEN_API_KEY`를 확인하세요.";
   }
   
   // 2. Safety Filter Errors

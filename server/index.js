@@ -23,7 +23,7 @@ const OPENAI_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1.5";
 const getOpenAIClient = () => {
   const apiKey = process.env.OPEN_API_KEY;
   if (!apiKey) {
-    const error = new Error("Missing OPEN_API_KEY environment variable.");
+    const error = new Error("OPEN_API_KEY_NOT_SET");
     // @ts-ignore
     error.status = 500;
     throw error;
@@ -42,7 +42,9 @@ const sendError = (res, err) => {
     (err && (err.status || err.statusCode)) ||
     (err && err.response && err.response.status) ||
     500;
-  res.status(status).json({ error: safeJsonError(err) });
+  const message = safeJsonError(err);
+  const code = message === "OPEN_API_KEY_NOT_SET" ? "OPEN_API_KEY_NOT_SET" : undefined;
+  res.status(status).json({ error: message, ...(code ? { code } : {}) });
 };
 
 const parseScenarioResponse = (responseText) => {
