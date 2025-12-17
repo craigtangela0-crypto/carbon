@@ -38,8 +38,14 @@ const getUserFriendlyErrorMessage = (error: unknown): string => {
   const message = error instanceof Error ? error.message : String(error);
 
   // 1. API Key / Permission Errors
-  if (message.includes('403') || message.includes('API_KEY_INVALID') || message.includes('API key not valid') || message.includes('PERMISSION_DENIED')) {
-    return "API 키가 올바르지 않습니다. 관리자에게 문의하세요.";
+  if (
+    message.includes('401') ||
+    message.includes('403') ||
+    message.toLowerCase().includes('invalid_api_key') ||
+    message.toLowerCase().includes('missing open_api_key') ||
+    message.toLowerCase().includes('api key')
+  ) {
+    return "서버 API 키 설정에 문제가 있습니다. 관리자에게 문의하세요.";
   }
   
   // 2. Safety Filter Errors
@@ -157,9 +163,7 @@ const App: React.FC = () => {
 
 
   useEffect(() => {
-    if (!process.env.API_KEY) {
-      setError("API 키가 설정되지 않았습니다. 환경 변수를 확인해주세요.");
-    }
+    // API 키는 Cloud Run 서버(백엔드)에서만 관리합니다.
   }, []);
   
   const currentStep = useMemo(() => {

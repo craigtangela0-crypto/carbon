@@ -1,66 +1,30 @@
 
-import { GoogleGenAI, GenerateContentResponse, Modality } from "@google/genai";
-import { EndingType, CharacterProfile, BackgroundProfile } from '../types';
-import { ENDING_DETAILS } from '../constants';
+import { EndingType, CharacterProfile, BackgroundProfile } from "../types";
 
-// Initialize the AI instance directly.
-// Ensure process.env.API_KEY is strictly used as per guidelines.
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+type JsonValue = string | number | boolean | null | JsonValue[] | { [k: string]: JsonValue };
 
-// Text generation uses Pro for quality story-telling
-const textModel = 'gemini-2.5-pro';
-// Image Prompt generation uses Flash for speed and better instruction following without over-filtering
-const promptGenModel = 'gemini-2.5-flash';
+const postJson = async <TResponse>(
+  path: string,
+  body: Record<string, JsonValue>
+): Promise<TResponse> => {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
 
-const imageModel = 'gemini-2.5-flash-image';
-const highQualityImageModel = 'gemini-3-pro-image-preview';
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("application/json") ? await response.json() : await response.text();
 
-// Common safety settings to reduce false positives for creative content
-// Changed to BLOCK_NONE to allow for dramatic/crisis themes in the game context
-const safetySettings = [
-  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-];
-
-const generateTextWithGemini = async (prompt: string): Promise<string> => {
-  let retries = 3;
-  while (retries > 0) {
-    try {
-      const response: GenerateContentResponse = await ai.models.generateContent({
-        model: textModel,
-        contents: prompt,
-        config: {
-          temperature: 0.7,
-          topK: 40,
-          topP: 0.95,
-          safetySettings: safetySettings,
-        }
-      });
-      if (!response.text) {
-        throw new Error("모델로부터 빈 응답을 받았습니다.");
-      }
-      return response.text;
-    } catch (error) {
-      retries--;
-      console.error(`Error calling Gemini API for text generation (retries left: ${retries}):`, error);
-
-      if (retries > 0 && error instanceof Error && (error.message.includes('500') || error.message.includes('INTERNAL'))) {
-        await new Promise(resolve => setTimeout(resolve, 1000 * (3 - retries)));
-        continue;
-      }
-
-      if (error instanceof Error) {
-        if (error.message.includes('API key not valid') || error.message.includes('API_KEY_INVALID')) {
-          throw new Error(`설정된 Gemini API 키가 유효하지 않습니다. 개발자에게 문의하세요.`);
-        }
-        throw new Error(`Gemini API 텍스트 생성 중 오류 발생: ${error.message}`);
-      }
-      throw new Error("Gemini API 텍스트 생성 중 알 수 없는 오류 발생");
-    }
+  if (!response.ok) {
+    const message =
+      typeof payload === "string"
+        ? payload
+        : (payload as { error?: string })?.error || `Request failed: ${response.status}`;
+    throw new Error(message);
   }
-  throw new Error("Gemini API 텍스트 생성 실패: 서버 오류가 반복되었습니다.");
+
+  return payload as TResponse;
 };
 
 // Helper to format prompts consistently
@@ -136,22 +100,11 @@ export const generatePrologueScenario = async (
   characterProfile: CharacterProfile,
   background: BackgroundProfile
 ): Promise<{ scenario: string, composition: string }> => {
-  const instruction = `
-    Write a prologue for a game about a carbon crisis. 
-    Describe the calm before the storm. Show subtle signs of the "${coreTheme}" affecting daily life through the eyes of a ${characterProfile.occupation}.
-    Do not resolve the conflict; create tension and curiosity.
-  `;
-  
-  const prompt = formatScenarioPrompt(
-    "Expert Interactive Fiction Writer specializing in Eco-Thrillers",
-    instruction,
+  return postJson<{ scenario: string; composition: string }>("/api/scenario/prologue", {
     coreTheme,
-    characterProfile,
-    background
-  );
-
-  const rawText = await generateTextWithGemini(prompt);
-  return parseScenarioResponse(rawText);
+    characterProfile: characterProfile as unknown as JsonValue,
+    background: background as unknown as JsonValue,
+  });
 };
 
 export const generateEndingScenario = async (
@@ -162,37 +115,14 @@ export const generateEndingScenario = async (
   background: BackgroundProfile,
   userSuggestion?: string
 ): Promise<{ scenario: string, composition: string }> => {
-  const endingDetail = ENDING_DETAILS[endingType];
-  
-  const extraContext = `
-Previous Story (Prologue):
-"""
-${prologue}
-"""
-
-Ending Type: ${endingDetail.title}
-Specific Direction: ${endingDetail.promptInfo}
-${userSuggestion ? `User's Creative Twist: "${userSuggestion}" (Integrate this creatively)` : ''}
-  `;
-
-  const instruction = `
-    Write the final ending scenario based on the prologue and theme.
-    The outcome should strictly reflect the "${endingDetail.title}" scenario.
-    Convey the emotions deeply (Joy/Hope for Success, Despair/Regret for Failure).
-    Do NOT mention the ending title explicitly in the text.
-  `;
-
-  const prompt = formatScenarioPrompt(
-    "Expert Game Scenario Writer",
-    instruction,
+  return postJson<{ scenario: string; composition: string }>("/api/scenario/ending", {
+    prologue,
+    endingType,
     coreTheme,
-    characterProfile,
-    background,
-    extraContext
-  );
-
-  const rawText = await generateTextWithGemini(prompt);
-  return parseScenarioResponse(rawText);
+    characterProfile: characterProfile as unknown as JsonValue,
+    background: background as unknown as JsonValue,
+    userSuggestion: (userSuggestion || null) as unknown as JsonValue,
+  });
 };
 
 const translateToEnglish = (profile: CharacterProfile) => {
@@ -350,141 +280,15 @@ export const generateImagePromptInternal = async (
   title?: string,
   compositionGuidance?: string // This is now strictly Pose/Action guidance from AI
 ): Promise<string> => {
-  const engProfile = translateToEnglish(characterProfile);
-  const engBackground = translateBackgroundToEnglish(background);
-  const styleTags = getStyleSpecificTags(characterProfile.artStyle);
-
-  const characterDescription = `A ${engProfile.age} ${engProfile.nationality} ${engProfile.gender} ${engProfile.occupation}${characterProfile.name ? ` named ${characterProfile.name}` : ''}, wearing ${engProfile.outfit}.`;
-  
-  const cameraKeywords = getCompositionKeywords(background.composition);
-  const poseGuidance = compositionGuidance || "character standing naturally";
-  const visualStructure = `${cameraKeywords}, ${poseGuidance}`;
-
-  // Standard Prompt
-  const standardPrompt = `
-You are an expert AI Art Prompt Engineer.
-Create a highly detailed, descriptive prompt for an image generation model based on the following scenario.
-
-**Input Data:**
-- **Context**: ${scenarioType === 'prologue' ? 'Prologue of a Carbon Crisis Game' : `Ending: ${title}`}
-- **Scenario**: "${scenarioText}"
-- **Character**: ${characterDescription}
-- **Style**: ${engProfile.artStyle}
-- **Setting**: ${engBackground.space}, ${engBackground.weather}, ${engBackground.timeOfDay}
-- **Mood**: ${engBackground.mood}
-- **Camera & Pose**: ${visualStructure} (Strictly follow this structure)
-
-**Instructions:**
-1. **Visual Focus**: Select the most visually striking moment from the scenario.
-2. **Detailing**: Describe clothing textures, lighting, and specific background details that reflect the carbon crisis theme.
-3. **Camera & Pose**: Incorporate the provided 'Camera & Pose' guidance. 
-   - Use the **Camera** settings (shot type) to frame the image.
-   - Use the **Pose** settings to depict the character's action.
-4. **Safety**: **CRITICAL**: Ensure the content is PG-13 and suitable for general audiences. Use symbolic or artistic representation for any conflict. Avoid gore, extreme violence, or prohibited sensitive content. Focus on atmosphere and emotion.
-5. **Output**: Return ONLY the English prompt text. No prefixes like "Prompt:".
-
-**Quality Keywords (Use these for the style):**
-"${styleTags}"
-  `;
-
-  // Fallback Prompt (Safe Mode)
-  const fallbackPrompt = `
-You are an expert AI Art Prompt Engineer.
-The previous attempt to generate a prompt for this scenario was flagged for safety.
-Your task is to create a **Safe, Symbolic, and Atmospheric** image prompt based on the mood of the scenario, **completely omitting any explicit description of violence, disaster, or suffering**.
-
-**Input Data:**
-- **Context**: ${scenarioType === 'prologue' ? 'Prologue' : `Ending: ${title}`} (Carbon Crisis Theme)
-- **Mood**: ${engBackground.mood}
-- **Setting**: ${engBackground.space}, ${engBackground.weather}, ${engBackground.timeOfDay}
-- **Character**: ${characterDescription}
-- **Style**: ${engProfile.artStyle}
-- **Camera**: ${visualStructure}
-
-**Instructions:**
-1. **Focus on Atmosphere**: Describe the lighting, colors, and environment to convey the emotion (e.g., tension, melancholy, hope) without showing the cause.
-2. **Symbolism**: Use metaphors (e.g., a withered flower, a looming shadow, a ray of light) instead of literal depiction of crisis.
-3. **Character**: Show the character's reaction or contemplation, not them being harmed or in immediate danger.
-4. **Safety**: ABSOLUTELY NO gore, violence, destruction, or disturbing imagery. Keep it PG and artistic.
-5. **Output**: Return ONLY the English prompt text.
-
-**Quality Keywords (Use these for the style):**
-"${styleTags}"
-  `;
-  
-  let retries = 3;
-  let useFallback = false;
-
-  while (retries > 0) {
-    try {
-      const currentPromptToUse = useFallback ? fallbackPrompt : standardPrompt;
-
-      // Use promptGenModel (Flash) for prompt generation to avoid "Empty Response" issues from Pro's stricter filters
-      const response: GenerateContentResponse = await ai.models.generateContent({
-        model: promptGenModel, 
-        contents: currentPromptToUse,
-        config: {
-          temperature: 0.7, 
-          responseMimeType: 'text/plain',
-          safetySettings: safetySettings, // Apply safety settings to prevent blocking
-        }
-      });
-
-      // Check for safety filtering before accessing text
-      if (response.candidates && response.candidates.length > 0) {
-        const candidate = response.candidates[0];
-        if (candidate.finishReason === 'SAFETY' || candidate.finishReason === 'PROHIBITED_CONTENT') {
-          if (!useFallback) {
-             console.warn("Scenario triggered safety filter. Switching to Safe Fallback Mode.");
-             useFallback = true;
-             // Don't decrement retries yet, try immediately with fallback
-             continue;
-          } else {
-             // Already tried fallback and failed
-             console.warn("Fallback prompt also triggered safety filter.");
-             throw new Error("이미지 묘사 생성 실패: 안전 정책에 의해 차단되었습니다 (Fallback Failed).");
-          }
-        }
-      }
-      
-      const text = response.text;
-      
-      // If text is empty/undefined, it often means a silent block or model refusal.
-      // Treat this as a trigger for Fallback Mode.
-      if (!text) {
-         if (!useFallback) {
-             console.warn("Empty response received (Silent Block). Switching to Safe Fallback Mode.");
-             useFallback = true;
-             continue;
-         }
-
-         if (response.candidates && response.candidates.length > 0 && response.candidates[0].finishReason !== 'STOP') {
-           throw new Error(`이미지 프롬프트 생성 실패: 비정상 종료 (${response.candidates[0].finishReason})`);
-         }
-         throw new Error("이미지 프롬프트 생성 실패: 모델 응답 없음");
-      }
-      
-      // Clean up potential markdown code blocks or prefixes
-      return text.replace(/```(plaintext|text|en|english)?\s*([\s\S]+?)\s*```/g,'$2').trim();
-
-    } catch (error) {
-      // If it is safety error (thrown above), it will bubble up
-      if (error instanceof Error && error.message.includes('안전 정책')) {
-          throw error;
-      }
-
-      retries--;
-      console.error(`Error calling Gemini API for image prompt generation (retries left: ${retries}):`, error);
-
-      if (retries === 0) {
-         if (error instanceof Error) throw error;
-         throw new Error("이미지 프롬프트 생성 중 알 수 없는 오류 발생");
-      }
-      // Wait before retry
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  }
-  throw new Error("이미지 프롬프트 생성 실패: 재시도 횟수 초과");
+  const result = await postJson<{ prompt: string }>("/api/image-prompt", {
+    scenarioText,
+    scenarioType,
+    characterProfile: characterProfile as unknown as JsonValue,
+    background: background as unknown as JsonValue,
+    title: (title || null) as unknown as JsonValue,
+    compositionGuidance: (compositionGuidance || null) as unknown as JsonValue,
+  });
+  return result.prompt;
 };
 
 export const generateImageFromPrompt = async (
@@ -494,75 +298,12 @@ export const generateImageFromPrompt = async (
   aspectRatio: '16:9' | '9:16' | '1:1' | '4:3' | '3:4' = '16:9',
   referenceStrength: 'Weak' | 'Medium' | 'Strong' = 'Medium'
 ): Promise<string> => {
-  try {
-    let finalPrompt = imagePrompt;
-    // Append instruction based on reference strength if a baseImage exists
-    if (baseImage) {
-        const instructionMap = {
-            'Weak': "Use the attached image as a loose reference.",
-            'Medium': "Maintain consistency with the attached reference image.",
-            'Strong': "Strictly follow the visual details and face of the attached reference image."
-        };
-        finalPrompt += ` ${instructionMap[referenceStrength]}`;
-    }
-
-    const parts: ({ text: string } | { inlineData: { data: string; mimeType: string } })[] = [];
-    
-    if (baseImage) {
-      parts.push({
-        inlineData: {
-          data: baseImage.data,
-          mimeType: baseImage.mimeType,
-        },
-      });
-    }
-    parts.push({ text: finalPrompt });
-
-    // Select the model based on the quality flag
-    const selectedModel = useHighQuality ? highQualityImageModel : imageModel;
-
-    const response = await ai.models.generateContent({
-        model: selectedModel,
-        contents: { parts },
-        config: {
-          responseModalities: [Modality.IMAGE],
-          imageConfig: {
-              aspectRatio: aspectRatio,
-          },
-          safetySettings: safetySettings, // Apply safety settings here too
-        },
-    });
-
-    const candidates = response.candidates;
-    if (!candidates || candidates.length === 0) {
-        throw new Error("이미지 생성 실패: 모델이 응답하지 않았습니다. (Candidates 없음)");
-    }
-
-    const firstCandidate = candidates[0];
-    // Check for safety filtering or other finish reasons
-    if (firstCandidate.finishReason === 'SAFETY' || firstCandidate.finishReason === 'PROHIBITED_CONTENT') {
-        throw new Error("이미지 생성 실패: 시나리오의 표현이 너무 구체적이거나 자극적일 수 있습니다. 안전 정책에 의해 차단되었습니다.");
-    }
-    if (firstCandidate.finishReason === 'NO_IMAGE') {
-        throw new Error("이미지 생성 실패: AI가 이미지를 생성하지 못했습니다. (NO_IMAGE). 설정을 변경하여 다시 시도해주세요.");
-    }
-    if (firstCandidate.finishReason && firstCandidate.finishReason !== 'STOP') {
-         throw new Error(`이미지 생성 실패: 비정상적인 종료 사유 (${firstCandidate.finishReason})`);
-    }
-
-    const imagePart = firstCandidate.content?.parts?.find(part => part.inlineData);
-
-    if (imagePart?.inlineData) {
-      return `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`;
-    } else {
-      throw new Error("응답에서 이미지 데이터(InlineData)를 찾을 수 없습니다.");
-    }
-  } catch (error) {
-    console.error("Error calling Gemini API for image generation:", error);
-     if (error instanceof Error) {
-        // Pass through the detailed error message
-      throw error;
-    }
-    throw new Error("이미지 생성 중 알 수 없는 오류 발생");
-  }
+  const result = await postJson<{ dataUrl: string }>("/api/image", {
+    prompt: imagePrompt,
+    baseImage: (baseImage || null) as unknown as JsonValue,
+    aspectRatio,
+    referenceStrength,
+    useHighQuality: useHighQuality as unknown as JsonValue,
+  });
+  return result.dataUrl;
 };
